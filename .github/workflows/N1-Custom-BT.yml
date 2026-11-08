@@ -67,10 +67,11 @@ jobs:
 
           # imagebuilder 自带的 apk 工具（与 rootfs 包数据库同源）
           curl -L --fail --retry 3 -o imagebuilder.tar.zst "$IMAGEBUILDER_URL"
-          IB=istoreos-imagebuilder-armsr-armv8.Linux-x86_64
           mkdir -p ibtools/bin ibtools/lib
-          tar --use-compress-program=unzstd -xf imagebuilder.tar.zst -C ibtools/bin --strip-components=5 "$IB/staging_dir/host/bin/apk"
-          tar --use-compress-program=unzstd -xf imagebuilder.tar.zst -C ibtools/lib --strip-components=4 "$IB/staging_dir/host/lib"
+          # 注意: 成员路径共 5 段，strip 4 段保留文件名 apk；strip 5 会静默丢文件
+          tar --use-compress-program=unzstd -xf imagebuilder.tar.zst -C ibtools/bin --strip-components=4 --wildcards '*staging_dir/host/bin/apk'
+          tar --use-compress-program=unzstd -xf imagebuilder.tar.zst -C ibtools/lib  --strip-components=4 --wildcards '*staging_dir/host/lib/*'
+          test -e ibtools/bin/apk || { echo '❌ apk 工具未解出'; tar --use-compress-program=unzstd -tf imagebuilder.tar.zst | grep -E 'host/bin/apk|host/lib/' | head -5; exit 1; }
           chmod +x ibtools/bin/apk
           LD_LIBRARY_PATH="$PWD/ibtools/lib" ibtools/bin/apk --version
 
