@@ -66,17 +66,20 @@ jobs:
           ls -lh *.apk
 
           # imagebuilder 自带的 apk 工具（与 rootfs 包数据库同源）
+          # 注意: host/bin/apk 是 bash 包装脚本, 真身是隐藏文件 .apk.bin, 脚本通过 ../lib/ 相对路径找自带 ld.so 与库
           curl -L --fail --retry 3 -o imagebuilder.tar.zst "$IMAGEBUILDER_URL"
-          mkdir -p ibtools/bin ibtools/lib
-          # 注意: 成员路径共 5 段，strip 4 段保留文件名 apk；strip 5 会静默丢文件
-          tar --use-compress-program=unzstd -xf imagebuilder.tar.zst -C ibtools/bin --strip-components=4 --wildcards '*staging_dir/host/bin/apk'
-          tar --use-compress-program=unzstd -xf imagebuilder.tar.zst -C ibtools/lib  --strip-components=4 --wildcards '*staging_dir/host/lib/*'
-          test -e ibtools/bin/apk || { echo '❌ apk 工具未解出'; tar --use-compress-program=unzstd -tf imagebuilder.tar.zst | grep -E 'host/bin/apk|host/lib/' | head -5; exit 1; }
-          chmod +x ibtools/bin/apk
-          LD_LIBRARY_PATH="$PWD/ibtools/lib" ibtools/bin/apk --version
+          mkdir -p ibtools
+          # 成员路径共 5 段: IB/staging_dir/host/{bin,lib}/... → strip 4 段保留布局
+          tar --use-compress-program=unzstd -xf imagebuilder.tar.zst -C ibtools --strip-components=4 \
+            --wildcards '*staging_dir/host/bin/apk' '*staging_dir/host/bin/.apk.bin' '*staging_dir/host/lib/*'
+          test -e ibtools/bin/apk && test -e ibtools/bin/.apk.bin && test -e ibtools/lib/ld-linux-x86-64.so.2 \
+            || { echo '❌ apk 工具链未完整解出'; find ibtools -maxdepth 2 | head -10; exit 1; }
+          chmod +x ibtools/bin/apk ibtools/bin/.apk.bin
+          # 关键: 不设置 LD_LIBRARY_PATH(会污染 /usr/bin-env 的 libc), 直接执行包装脚本, 由其自带 ld.so 运行
+          ibtools/bin/apk --version
 
           # 安装进 rootfs（保持包数据库一致；依赖从已装包清单解析）
-          LD_LIBRARY_PATH="$PWD/ibtools/lib" ibtools/bin/apk add \
+          ibtools/bin/apk add \
             --root "$PWD/rootfs-stage" --allow-untrusted --no-scripts --no-network \
             "$PWD/bluez-daemon-5.83-r1.apk" "$PWD/bluez-libs-5.83-r1.apk" "$PWD/bluez-utils-5.83-r1.apk"
 
