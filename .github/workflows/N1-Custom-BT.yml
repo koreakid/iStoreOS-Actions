@@ -69,8 +69,8 @@ jobs:
           # 注意: host/bin/apk 是 bash 包装脚本, 真身是隐藏文件 .apk.bin, 脚本通过 ../lib/ 相对路径找自带 ld.so 与库
           curl -L --fail --retry 3 -o imagebuilder.tar.zst "$IMAGEBUILDER_URL"
           mkdir -p ibtools
-          # 成员路径共 5 段: IB/staging_dir/host/{bin,lib}/... → strip 4 段保留布局
-          tar --use-compress-program=unzstd -xf imagebuilder.tar.zst -C ibtools --strip-components=4 \
+          # 成员路径: IB(1)/staging_dir(2)/host(3)/bin|lib(4)/文件(5) → strip 3 段保留 bin/ 与 lib/ 布局
+          tar --use-compress-program=unzstd -xf imagebuilder.tar.zst -C ibtools --strip-components=3 \
             --wildcards '*staging_dir/host/bin/apk' '*staging_dir/host/bin/.apk.bin' '*staging_dir/host/lib/*'
           test -e ibtools/bin/apk && test -e ibtools/bin/.apk.bin && test -e ibtools/lib/ld-linux-x86-64.so.2 \
             || { echo '❌ apk 工具链未完整解出'; find ibtools -maxdepth 2 | head -10; exit 1; }
