@@ -6,6 +6,7 @@ env:
   VERSION: 25.12.6
   KERNEL: 6.12.114
   ROOTFS_URL: https://github.com/koreakid/iStoreOS-Actions/releases/download/iStoreOS-25.12.6-RELEASE-dhcp/istoreos-armsr-armv8-generic-rootfs.tar.gz
+  IMAGEBUILDER_URL: https://github.com/Kwonelee/iStoreOS-Actions/releases/download/iStoreOS-ImageBuilder/20261106-istoreos-imagebuilder-armsr-armv8.Linux-x86_64.tar.zst
 
 jobs:
   build:
@@ -28,52 +29,61 @@ jobs:
           set -e
           cd bin/targets/armsr/armv8
 
-          # ---------- 1. Wireless & BT firmware (CYW43455, same chip as RPi 3B+) ----------
-          mkdir -p inject/lib/firmware/brcm inject/lib/firmware
-          base=https://github.com/armbian/firmware/raw/master
-          curl -L --fail -o inject/lib/firmware/brcm/brcmfmac43455-sdio.bin       "$base/brcm/brcmfmac43455-sdio.bin"
-          curl -L --fail -o inject/lib/firmware/brcm/brcmfmac43455-sdio.txt       "$base/brcm/brcmfmac43455-sdio.txt"
-          curl -L --fail -o inject/lib/firmware/brcm/brcmfmac43455-sdio.clm_blob  "$base/brcm/brcmfmac43455-sdio.clm_blob"
-          curl -L --fail -o inject/lib/firmware/brcm/BCM4345C0.hcd                "$base/BCM4345C0.hcd"
-          # hci_bcm / btbcm 在不同内核里固件查找路径可能为 brcm/ 或根目录，两处都放
-          cp inject/lib/firmware/brcm/BCM4345C0.hcd inject/lib/firmware/BCM4345C0.hcd
+          # ---------- 1. Unpack rootfs into staging tree ----------
+          mkdir -p rootfs-stage
+          tar -xzf rootfs.tar.gz -C rootfs-stage
 
-          # ---------- 2. bluez userspace from official 25.12.6 feed (apk v3, extract via alpine container) ----------
+          # ---------- 2. Wireless & BT firmware (CYW43455, same chip as RPi 3B+) ----------
+          mkdir -p rootfs-stage/lib/firmware/brcm
+          base=https://github.com/armbian/firmware/raw/master
+          curl -L --fail -o rootfs-stage/lib/firmware/brcm/brcmfmac43455-sdio.bin      "$base/brcm/brcmfmac43455-sdio.bin"
+          curl -L --fail -o rootfs-stage/lib/firmware/brcm/brcmfmac43455-sdio.txt      "$base/brcm/brcmfmac43455-sdio.txt"
+          curl -L --fail -o rootfs-stage/lib/firmware/brcm/brcmfmac43455-sdio.clm_blob "$base/brcm/brcmfmac43455-sdio.clm_blob"
+          curl -L --fail -o rootfs-stage/lib/firmware/brcm/BCM4345C0.hcd               "$base/BCM4345C0.hcd"
+          # hci_bcm / btbcm 在不同内核里固件查找路径可能为 brcm/ 或根目录，两处都放
+          cp rootfs-stage/lib/firmware/brcm/BCM4345C0.hcd rootfs-stage/lib/firmware/BCM4345C0.hcd
+
+          # WiFi 模块自加载条目（若 rootfs 已有则跳过）
+          if [ ! -e rootfs-stage/etc/modules.d/brcmfmac ]; then
+            mkdir -p rootfs-stage/etc/modules.d
+            printf 'brcmfmac\n' > rootfs-stage/etc/modules.d/brcmfmac
+          fi
+
+          # 首次开机自动启用 bluetoothd
+          if [ -e rootfs-stage/etc/init.d/bluetoothd ] || true; then
+            mkdir -p rootfs-stage/etc/uci-defaults
+            printf '#!/bin/sh\n/etc/init.d/bluetoothd enable\n' > rootfs-stage/etc/uci-defaults/99_n1_bluetoothd.sh
+            chmod +x rootfs-stage/etc/uci-defaults/99_n1_bluetoothd.sh
+          fi
+
+          # ---------- 3. bluez userspace from official 25.12.6 feed ----------
           FEED_OFFICIAL=https://downloads.openwrt.org/releases/25.12.6/packages/aarch64_generic/packages
           FEED_MIRROR=https://mirror.nju.edu.cn/openwrt/releases/25.12.6/packages/aarch64_generic/packages
           for p in bluez-daemon-5.83-r1 bluez-libs-5.83-r1 bluez-utils-5.83-r1; do
-            curl -fsSL --retry 3 -o "$p.apk" "$FEED_OFFICIAL/$p.apk" \
-              || curl -fsSL --retry 3 -o "$p.apk" "$FEED_MIRROR/$p.apk"
+            curl -fSL --retry 3 -o "$p.apk" "$FEED_OFFICIAL/$p.apk" \
+              || curl -fSL --retry 3 -o "$p.apk" "$FEED_MIRROR/$p.apk"
           done
           ls -lh *.apk
-          docker run --rm -v "$PWD:/w" -w /w alpine:3.22 sh -c '
-            set -e
-            mkdir -p ex
-            apk extract --destination ex bluez-daemon-5.83-r1.apk bluez-libs-5.83-r1.apk bluez-utils-5.83-r1.apk \
-              || apk extract -C ex bluez-daemon-5.83-r1.apk bluez-libs-5.83-r1.apk bluez-utils-5.83-r1.apk \
-              || (cd ex && apk extract ../bluez-daemon-5.83-r1.apk ../bluez-libs-5.83-r1.apk ../bluez-utils-5.83-r1.apk)
-            echo "--- extracted tree ---"
-            ls -la ex
-            find ex -name "bluetoothd" -o -name "btattach" -o -name "libbluetooth*"
-          '
-          test -e ex/usr/sbin/bluetoothd || { echo "bluetoothd 未解出，检查 apk extract 输出"; find ex -type f | head -50; exit 1; }
 
-          # ---------- 3. Merge injected files into rootfs tar ----------
-          gzip -dc rootfs.tar.gz > rootfs.tar
-          tar -rf rootfs.tar -C inject lib
-          # 无线模块自加载条目（若 rootfs 已有则跳过）
-          if ! tar -tf rootfs.tar | grep -q 'etc/modules.d/brcmfmac'; then
-            mkdir -p inject/etc/modules.d
-            printf 'brcmfmac\n' > inject/etc/modules.d/brcmfmac
-            tar -rf rootfs.tar -C inject etc/modules.d/brcmfmac
-          fi
-          # bluez 文件按 apk 实际解出的顶级目录合并（跳过 dotfile）
-          EXDIRS=$(cd ex && ls)
-          echo "bluez merge dirs: $EXDIRS"
-          tar -rf rootfs.tar -C ex $EXDIRS
-          gzip -9 -c rootfs.tar > rootfs-new.tar.gz
-          mv -f rootfs-new.tar.gz rootfs.tar.gz
-          rm -f rootfs.tar
+          # imagebuilder 自带的 apk 工具（与 rootfs 包数据库同源）
+          curl -L --fail --retry 3 -o imagebuilder.tar.zst "$IMAGEBUILDER_URL"
+          IB=istoreos-imagebuilder-armsr-armv8.Linux-x86_64
+          mkdir -p ibtools/bin ibtools/lib
+          tar --use-compress-program=unzstd -xf imagebuilder.tar.zst -C ibtools/bin --strip-components=5 "$IB/staging_dir/host/bin/apk"
+          tar --use-compress-program=unzstd -xf imagebuilder.tar.zst -C ibtools/lib --strip-components=4 "$IB/staging_dir/host/lib"
+          chmod +x ibtools/bin/apk
+          LD_LIBRARY_PATH="$PWD/ibtools/lib" ibtools/bin/apk --version
+
+          # 安装进 rootfs（保持包数据库一致；依赖从已装包清单解析）
+          LD_LIBRARY_PATH="$PWD/ibtools/lib" ibtools/bin/apk add \
+            --root "$PWD/rootfs-stage" --allow-untrusted --no-scripts --no-network \
+            "$PWD/bluez-daemon-5.83-r1.apk" "$PWD/bluez-libs-5.83-r1.apk" "$PWD/bluez-utils-5.83-r1.apk"
+
+          test -e rootfs-stage/usr/sbin/bluetoothd || { echo "❌ bluetoothd 未安装"; find rootfs-stage -name 'bluetoothd*' | head; exit 1; }
+
+          # ---------- 4. Repack rootfs (root:root) ----------
+          tar --owner=0 --group=0 -czf rootfs.tar.gz -C rootfs-stage .
+          rm -rf rootfs-stage ibtools *.apk imagebuilder.tar.zst
           echo "=== 注入结果抽查 ==="
           tar -tzf rootfs.tar.gz | grep -E 'brcmfmac43455|BCM4345C0|modules.d/brcmfmac|bluetoothd|btattach|libbluetooth' | head -30
           ls -lh rootfs.tar.gz
@@ -108,7 +118,7 @@ jobs:
           body: |
             iStoreOS 25.12.6 (apk) + flippy 6.12.114 内核 + N1 蓝牙/WiFi 支持
             - 已注入: brcmfmac43455-sdio 固件 (bin/txt/clm_blob), BCM4345C0.hcd
-            - 已预装: bluez-daemon / bluez-libs / bluez-utils (官方 25.12.6 feed)
+            - 已预装: bluez-daemon / bluez-libs / bluez-utils (官方 25.12.6 feed, apk --root 安装)
             - 机型: s905d (Phicomm N1)
           files: |
             ${{ env.PACKAGED_OUTPUTPATH }}/*.img.gz
