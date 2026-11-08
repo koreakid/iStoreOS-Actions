@@ -72,6 +72,8 @@ jobs:
           fetch_apk bluez-utils-extra-5.83-r1 "$FEED_OFFICIAL"  "$FEED_MIRROR"
           fetch_apk libical-3.0.20-r1         "$FEED_OFFICIAL"  "$FEED_MIRROR"
           fetch_apk kmod-bluetooth-6.12.112-r1 "$KMODS_OFFICIAL" "$KMODS_MIRROR"
+          fetch_apk kmod-crypto-ecdh-6.12.112-r1 "$KMODS_OFFICIAL" "$KMODS_MIRROR"
+          fetch_apk kmod-crypto-kpp-6.12.112-r1 "$KMODS_OFFICIAL" "$KMODS_MIRROR"
           ls -lh *.apk
 
           # imagebuilder 自带的 apk 工具（与 rootfs 包数据库同源）
@@ -91,7 +93,8 @@ jobs:
           ibtools/bin/apk add \
             --root "$PWD/rootfs-stage" --allow-untrusted --no-scripts --no-network \
             "$PWD/bluez-daemon-5.83-r1.apk" "$PWD/bluez-libs-5.83-r1.apk" "$PWD/bluez-utils-5.83-r1.apk" \
-            "$PWD/bluez-utils-extra-5.83-r1.apk" "$PWD/libical-3.0.20-r1.apk" "$PWD/kmod-bluetooth-6.12.112-r1.apk"
+            "$PWD/bluez-utils-extra-5.83-r1.apk" "$PWD/libical-3.0.20-r1.apk" "$PWD/kmod-bluetooth-6.12.112-r1.apk" \
+            "$PWD/kmod-crypto-ecdh-6.12.112-r1.apk" "$PWD/kmod-crypto-kpp-6.12.112-r1.apk"
 
           BTDBIN=$(find rootfs-stage -type f -name 'bluetoothd' | head -1)
           test -n "$BTDBIN" || { echo "❌ bluetoothd 未安装"; find rootfs-stage -name 'bluetooth*' | head; exit 1; }
