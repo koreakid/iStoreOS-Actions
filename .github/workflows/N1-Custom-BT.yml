@@ -1,0 +1,116 @@
+name: N1_Custom_BT (iStoreOS 25.12.6 + flippy 6.12.114 + BT/WiFi)
+on:
+  workflow_dispatch:
+
+env:
+  VERSION: 25.12.6
+  KERNEL: 6.12.114
+  ROOTFS_URL: https://github.com/koreakid/iStoreOS-Actions/releases/download/iStoreOS-25.12.6-RELEASE-dhcp/istoreos-armsr-armv8-generic-rootfs.tar.gz
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Download iStoreOS 25.12.6 rootfs (St1 output)
+        run: |
+          set -e
+          mkdir -p bin/targets/armsr/armv8
+          curl -L --fail --retry 3 -o bin/targets/armsr/armv8/rootfs.tar.gz "$ROOTFS_URL"
+          ls -lh bin/targets/armsr/armv8/
+
+      - name: Inject N1 WiFi/BT firmware + bluez userspace
+        run: |
+          set -e
+          cd bin/targets/armsr/armv8
+
+          # ---------- 1. Wireless & BT firmware (CYW43455, same chip as RPi 3B+) ----------
+          mkdir -p inject/lib/firmware/brcm inject/lib/firmware
+          base=https://github.com/armbian/firmware/raw/master
+          curl -L --fail -o inject/lib/firmware/brcm/brcmfmac43455-sdio.bin       "$base/brcm/brcmfmac43455-sdio.bin"
+          curl -L --fail -o inject/lib/firmware/brcm/brcmfmac43455-sdio.txt       "$base/brcm/brcmfmac43455-sdio.txt"
+          curl -L --fail -o inject/lib/firmware/brcm/brcmfmac43455-sdio.clm_blob  "$base/brcm/brcmfmac43455-sdio.clm_blob"
+          curl -L --fail -o inject/lib/firmware/brcm/BCM4345C0.hcd                "$base/BCM4345C0.hcd"
+          # hci_bcm / btbcm 在不同内核里固件查找路径可能为 brcm/ 或根目录，两处都放
+          cp inject/lib/firmware/brcm/BCM4345C0.hcd inject/lib/firmware/BCM4345C0.hcd
+
+          # ---------- 2. bluez userspace from official 25.12.6 feed (apk v3, extract via alpine container) ----------
+          FEED_OFFICIAL=https://downloads.openwrt.org/releases/25.12.6/packages/aarch64_generic/packages
+          FEED_MIRROR=https://mirror.nju.edu.cn/openwrt/releases/25.12.6/packages/aarch64_generic/packages
+          for p in bluez-daemon-5.83-r1 bluez-libs-5.83-r1 bluez-utils-5.83-r1; do
+            curl -fsSL --retry 3 -o "$p.apk" "$FEED_OFFICIAL/$p.apk" \
+              || curl -fsSL --retry 3 -o "$p.apk" "$FEED_MIRROR/$p.apk"
+          done
+          ls -lh *.apk
+          docker run --rm -v "$PWD:/w" -w /w alpine:3.22 sh -c '
+            set -e
+            mkdir -p ex
+            apk extract --destination ex bluez-daemon-5.83-r1.apk bluez-libs-5.83-r1.apk bluez-utils-5.83-r1.apk \
+              || apk extract -C ex bluez-daemon-5.83-r1.apk bluez-libs-5.83-r1.apk bluez-utils-5.83-r1.apk \
+              || (cd ex && apk extract ../bluez-daemon-5.83-r1.apk ../bluez-libs-5.83-r1.apk ../bluez-utils-5.83-r1.apk)
+            echo "--- extracted tree ---"
+            ls -la ex
+            find ex -name "bluetoothd" -o -name "btattach" -o -name "libbluetooth*"
+          '
+          test -e ex/usr/sbin/bluetoothd || { echo "bluetoothd 未解出，检查 apk extract 输出"; find ex -type f | head -50; exit 1; }
+
+          # ---------- 3. Merge injected files into rootfs tar ----------
+          gzip -dc rootfs.tar.gz > rootfs.tar
+          tar -rf rootfs.tar -C inject lib
+          # 无线模块自加载条目（若 rootfs 已有则跳过）
+          if ! tar -tf rootfs.tar | grep -q 'etc/modules.d/brcmfmac'; then
+            mkdir -p inject/etc/modules.d
+            printf 'brcmfmac\n' > inject/etc/modules.d/brcmfmac
+            tar -rf rootfs.tar -C inject etc/modules.d/brcmfmac
+          fi
+          # bluez 文件按 apk 实际解出的顶级目录合并（跳过 dotfile）
+          EXDIRS=$(cd ex && ls)
+          echo "bluez merge dirs: $EXDIRS"
+          tar -rf rootfs.tar -C ex $EXDIRS
+          gzip -9 -c rootfs.tar > rootfs-new.tar.gz
+          mv -f rootfs-new.tar.gz rootfs.tar.gz
+          rm -f rootfs.tar
+          echo "=== 注入结果抽查 ==="
+          tar -tzf rootfs.tar.gz | grep -E 'brcmfmac43455|BCM4345C0|modules.d/brcmfmac|bluetoothd|btattach|libbluetooth' | head -30
+          ls -lh rootfs.tar.gz
+
+      - name: Package N1 firmware (s905d + flippy 6.12.114)
+        uses: ophub/amlogic-s9xxx-openwrt@main
+        with:
+          openwrt_path: bin/targets/armsr/armv8/rootfs.tar.gz
+          openwrt_board: s905d
+          openwrt_kernel: 6.12.114
+          auto_kernel: false
+          kernel_repo: ophub/kernel
+          kernel_usage: flippy
+          builder_name: koreakid
+
+      - name: Rename output images
+        run: |
+          for FILE in ${{ env.PACKAGED_OUTPUTPATH }}/*.img.gz; do
+            FILENAME=$(basename "$FILE")
+            NEW_FILENAME=$(echo "$FILENAME" | sed 's/openwrt/istoreos_${{ env.VERSION }}_bt/g')
+            if [ "$FILENAME" != "$NEW_FILENAME" ]; then
+              mv "$FILE" "${{ env.PACKAGED_OUTPUTPATH }}/$NEW_FILENAME"
+              echo "Renamed: $FILENAME -> $NEW_FILENAME"
+            fi
+          done
+          ls -lh ${{ env.PACKAGED_OUTPUTPATH }}/
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: iStoreOS-${{ env.VERSION }}-N1-flippy-${{ env.KERNEL }}
+          body: |
+            iStoreOS 25.12.6 (apk) + flippy 6.12.114 内核 + N1 蓝牙/WiFi 支持
+            - 已注入: brcmfmac43455-sdio 固件 (bin/txt/clm_blob), BCM4345C0.hcd
+            - 已预装: bluez-daemon / bluez-libs / bluez-utils (官方 25.12.6 feed)
+            - 机型: s905d (Phicomm N1)
+          files: |
+            ${{ env.PACKAGED_OUTPUTPATH }}/*.img.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
