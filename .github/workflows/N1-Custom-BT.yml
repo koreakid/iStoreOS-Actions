@@ -59,10 +59,19 @@ jobs:
           # ---------- 3. bluez userspace from official 25.12.6 feed ----------
           FEED_OFFICIAL=https://downloads.openwrt.org/releases/25.12.6/packages/aarch64_generic/packages
           FEED_MIRROR=https://mirror.nju.edu.cn/openwrt/releases/25.12.6/packages/aarch64_generic/packages
-          for p in bluez-daemon-5.83-r1 bluez-libs-5.83-r1 bluez-utils-5.83-r1; do
-            curl -fSL --retry 3 -o "$p.apk" "$FEED_OFFICIAL/$p.apk" \
-              || curl -fSL --retry 3 -o "$p.apk" "$FEED_MIRROR/$p.apk"
-          done
+          KMODS_OFFICIAL=https://downloads.openwrt.org/releases/25.12.6/targets/armsr/armv8/kmods/6.12.112-1-67e205f26d0458c4d12f1fd315216398
+          KMODS_MIRROR=https://mirror.nju.edu.cn/openwrt/releases/25.12.6/targets/armsr/armv8/kmods/6.12.112-1-67e205f26d0458c4d12f1fd315216398
+          fetch_apk() {
+            curl -fSL --retry 3 -o "$1.apk" "$2/$1.apk" \
+              || curl -fSL --retry 3 -o "$1.apk" "$3/$1.apk"
+          }
+          # bluez 三件套 + 依赖闭包 (libical / bluez-utils-extra / kmod-bluetooth)
+          fetch_apk bluez-daemon-5.83-r1      "$FEED_OFFICIAL"  "$FEED_MIRROR"
+          fetch_apk bluez-libs-5.83-r1        "$FEED_OFFICIAL"  "$FEED_MIRROR"
+          fetch_apk bluez-utils-5.83-r1       "$FEED_OFFICIAL"  "$FEED_MIRROR"
+          fetch_apk bluez-utils-extra-5.83-r1 "$FEED_OFFICIAL"  "$FEED_MIRROR"
+          fetch_apk libical-3.0.20-r1         "$FEED_OFFICIAL"  "$FEED_MIRROR"
+          fetch_apk kmod-bluetooth-6.12.112-r1 "$KMODS_OFFICIAL" "$KMODS_MIRROR"
           ls -lh *.apk
 
           # imagebuilder 自带的 apk 工具（与 rootfs 包数据库同源）
@@ -78,12 +87,15 @@ jobs:
           # 关键: 不设置 LD_LIBRARY_PATH(会污染 /usr/bin-env 的 libc), 直接执行包装脚本, 由其自带 ld.so 运行
           ibtools/bin/apk --version
 
-          # 安装进 rootfs（保持包数据库一致；依赖从已装包清单解析）
+          # 安装进 rootfs（保持包数据库一致；依赖闭包已随包提供）
           ibtools/bin/apk add \
             --root "$PWD/rootfs-stage" --allow-untrusted --no-scripts --no-network \
-            "$PWD/bluez-daemon-5.83-r1.apk" "$PWD/bluez-libs-5.83-r1.apk" "$PWD/bluez-utils-5.83-r1.apk"
+            "$PWD/bluez-daemon-5.83-r1.apk" "$PWD/bluez-libs-5.83-r1.apk" "$PWD/bluez-utils-5.83-r1.apk" \
+            "$PWD/bluez-utils-extra-5.83-r1.apk" "$PWD/libical-3.0.20-r1.apk" "$PWD/kmod-bluetooth-6.12.112-r1.apk"
 
-          test -e rootfs-stage/usr/sbin/bluetoothd || { echo "❌ bluetoothd 未安装"; find rootfs-stage -name 'bluetoothd*' | head; exit 1; }
+          BTDBIN=$(find rootfs-stage -type f -name 'bluetoothd' | head -1)
+          test -n "$BTDBIN" || { echo "❌ bluetoothd 未安装"; find rootfs-stage -name 'bluetooth*' | head; exit 1; }
+          echo "✅ bluetoothd 位于: $BTDBIN"
 
           # ---------- 4. Repack rootfs (root:root) ----------
           tar --owner=0 --group=0 -czf rootfs.tar.gz -C rootfs-stage .
