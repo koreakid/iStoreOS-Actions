@@ -1,4 +1,4 @@
-name: N1_Custom_BT (iStoreOS 25.12.6 + flippy 6.12.115 + BT/WiFi)
+name: N1_Custom_BT (iStoreOS 25.12.6 + flippy 6.12.115 + BT/WiFi/passwall2)
 on:
   workflow_dispatch:
 
@@ -7,6 +7,17 @@ env:
   KERNEL: 6.12.115
   ROOTFS_URL: https://github.com/koreakid/iStoreOS-Actions/releases/download/iStoreOS-25.12.6-RELEASE-dhcp/istoreos-armsr-armv8-generic-rootfs.tar.gz
   IMAGEBUILDER_URL: https://github.com/Kwonelee/iStoreOS-Actions/releases/download/iStoreOS-ImageBuilder/20261106-istoreos-imagebuilder-armsr-armv8.Linux-x86_64.tar.zst
+  # Cypress 7.45.234 WiFi 固件 (linux-firmware 官方仓库固定 commit f97e3167, 永久不变)
+  # 用途: DashPlay board_phicomm_n1.py 校验 7.45.234 版本串后自动把 N1 的 WiFi 切到双链路稳定固件
+  CYPRESS_BIN_URL: https://gitlab.com/kernel-firmware/linux-firmware/-/raw/f97e31677523/cypress/cyfmac43455-sdio.bin
+  CYPRESS_CLM_URL: https://gitlab.com/kernel-firmware/linux-firmware/-/raw/f97e31677523/cypress/cyfmac43455-sdio.clm_blob
+  CYPRESS_BIN_SHA256: d408faa9d0d5b1a2f9912dcea53ab0be48217288e398406d117f0edafe7c3edd
+  CYPRESS_CLM_SHA256: 15f50a27020b263d1bea215c8f68d0550d912932d1d9ef19ffd59f18d82dd460
+  # passwall2 官方源 (xiaorouji/openwrt-passwall, SourceForge packages-25.12, aarch64_generic)
+  PW_LUCI_REPO: https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-25.12/aarch64_generic/passwall_luci/packages.adb
+  PW_PKG_REPO: https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-25.12/aarch64_generic/passwall_packages/packages.adb
+  PW2_REPO: https://master.dl.sourceforge.net/project/openwrt-passwall-build/releases/packages-25.12/aarch64_generic/passwall2/packages.adb
+  PW_KEY_URL: https://downloads.sourceforge.net/project/openwrt-passwall-build/apk.pub
 
 jobs:
   build:
@@ -24,7 +35,7 @@ jobs:
           curl -L --fail --retry 3 -o bin/targets/armsr/armv8/rootfs.tar.gz "$ROOTFS_URL"
           ls -lh bin/targets/armsr/armv8/
 
-      - name: Inject N1 WiFi/BT firmware + bluez userspace
+      - name: Inject N1 WiFi/BT firmware + cypress + bluez 5.87 + passwall2
         run: |
           set -e
           cd bin/targets/armsr/armv8
@@ -43,6 +54,19 @@ jobs:
           # hci_bcm / btbcm 在不同内核里固件查找路径可能为 brcm/ 或根目录，两处都放
           cp rootfs-stage/lib/firmware/brcm/BCM4345C0.hcd rootfs-stage/lib/firmware/BCM4345C0.hcd
 
+          # ---------- 2b. Cypress 7.45.234 固件 (N1 双链路实测稳定版) ----------
+          # N1 板卡专属名 brcm/brcmfmac43455-sdio.phicomm,n1.* 仍走 2018 旧固件时,
+          # "连上游热点 + 自己发 AP" 双角色场景 1~1.5 分钟静默失联; 切到 cypress 7.45.234 后稳定.
+          # DashPlay 的 board_phicomm_n1.py 每次 supervisor 启动时校验此版本串并自动建立 brcm/ 下的
+          # phicomm,n1 -> ../cypress/ 符号链接, 故这里只需放好文件, 无需在镜像里预切换.
+          mkdir -p rootfs-stage/lib/firmware/cypress
+          curl -L --fail --retry 3 -o rootfs-stage/lib/firmware/cypress/cyfmac43455-sdio.bin      "$CYPRESS_BIN_URL"
+          curl -L --fail --retry 3 -o rootfs-stage/lib/firmware/cypress/cyfmac43455-sdio.clm_blob "$CYPRESS_CLM_URL"
+          echo "$CYPRESS_BIN_SHA256  rootfs-stage/lib/firmware/cypress/cyfmac43455-sdio.bin"      | sha256sum -c -
+          echo "$CYPRESS_CLM_SHA256  rootfs-stage/lib/firmware/cypress/cyfmac43455-sdio.clm_blob" | sha256sum -c -
+          grep -aq '7.45.234' rootfs-stage/lib/firmware/cypress/cyfmac43455-sdio.bin \
+            || { echo '❌ Cypress 固件版本串不是 7.45.234, board_phicomm_n1.py 将拒绝切换'; exit 1; }
+
           # WiFi 模块自加载条目（若 rootfs 已有则跳过）
           if [ ! -e rootfs-stage/etc/modules.d/brcmfmac ]; then
             mkdir -p rootfs-stage/etc/modules.d
@@ -59,7 +83,10 @@ jobs:
           # 蓝牙模块自加载条目（N1 板载 BCM43455: DT serdev 蓝牙节点需 modprobe hci_uart 后 hci0 才出现）
           printf 'btbcm\nhci_uart\n' > rootfs-stage/etc/modules.d/32-hci-bt
 
-          # ---------- 3. bluez userspace from official 25.12.6 feed ----------
+          # ---------- 3. bluez 5.87 from 仓库 dist/bluez-5.87/ (修复 btmgmt 非交互回归) ----------
+          # bluez 5.83 的 btmgmt 存在 shell.c 主菜单 pre_run 永不执行的回归 (mgmt socket 不建立,
+          # DashPlay power_bluetooth() 失败); 5.84 起上游已修复. 25.12.6 官方 feed 仍为 5.83,
+          # 固定使用本仓库 dist/bluez-5.87/ 中已装机验证过的四个 apk (sha256 逐个校验).
           FEED_OFFICIAL=https://downloads.openwrt.org/releases/25.12.6/packages/aarch64_generic/packages
           FEED_MIRROR=https://mirror.nju.edu.cn/openwrt/releases/25.12.6/packages/aarch64_generic/packages
           KMODS_OFFICIAL=https://downloads.openwrt.org/releases/25.12.6/targets/armsr/armv8/kmods/6.12.112-1-67e205f26d0458c4d12f1fd315216398
@@ -68,11 +95,13 @@ jobs:
             curl -fSL --retry 3 -o "$1.apk" "$2/$1.apk" \
               || curl -fSL --retry 3 -o "$1.apk" "$3/$1.apk"
           }
-          # bluez 三件套 + 依赖闭包 (libical / bluez-utils-extra / kmod-bluetooth)
-          fetch_apk bluez-daemon-5.83-r1      "$FEED_OFFICIAL"  "$FEED_MIRROR"
-          fetch_apk bluez-libs-5.83-r1        "$FEED_OFFICIAL"  "$FEED_MIRROR"
-          fetch_apk bluez-utils-5.83-r1       "$FEED_OFFICIAL"  "$FEED_MIRROR"
-          fetch_apk bluez-utils-extra-5.83-r1 "$FEED_OFFICIAL"  "$FEED_MIRROR"
+          # bluez 5.87 四件套来自仓库 dist/ (x86 上无法运行 aarch64 post-install, 用 --no-scripts)
+          BLUEZ_DIST="$GITHUB_WORKSPACE/dist/bluez-5.87"
+          echo "1269d8f9a471003dfe2639b59d764df95d347c08a12feb070539257c330b9136  $BLUEZ_DIST/bluez-daemon-5.87-r1.apk"      | sha256sum -c -
+          echo "0f43762c7077569329fda2e6046e3b74a6275398e7490e17d3e592fddfcfcf70  $BLUEZ_DIST/bluez-libs-5.87-r1.apk"        | sha256sum -c -
+          echo "7dc4a4db40499b08e703a2c02f7666ab640c47be1340d3098baeb88a6ad3acd4  $BLUEZ_DIST/bluez-utils-5.87-r1.apk"       | sha256sum -c -
+          echo "f52efa324739fe5508254613f0cb50a0e332cad720129da6308e95fcfa1afce2  $BLUEZ_DIST/bluez-utils-extra-5.87-r1.apk" | sha256sum -c -
+          # 余下依赖闭包来自官方 25.12.6 feed (libical / bluez 相关 kmod)
           fetch_apk libical-3.0.20-r1         "$FEED_OFFICIAL"  "$FEED_MIRROR"
           fetch_apk kmod-bluetooth-6.12.112-r1 "$KMODS_OFFICIAL" "$KMODS_MIRROR"
           fetch_apk kmod-crypto-ecdh-6.12.112-r1 "$KMODS_OFFICIAL" "$KMODS_MIRROR"
@@ -92,22 +121,58 @@ jobs:
           # 关键: 不设置 LD_LIBRARY_PATH(会污染 /usr/bin-env 的 libc), 直接执行包装脚本, 由其自带 ld.so 运行
           ibtools/bin/apk --version
 
-          # 安装进 rootfs（保持包数据库一致；依赖闭包已随包提供）
+          # 安装 bluez 5.87 进 rootfs（保持包数据库一致；依赖闭包已随包提供）
           ibtools/bin/apk add \
             --root "$PWD/rootfs-stage" --allow-untrusted --no-scripts --no-network \
-            "$PWD/bluez-daemon-5.83-r1.apk" "$PWD/bluez-libs-5.83-r1.apk" "$PWD/bluez-utils-5.83-r1.apk" \
-            "$PWD/bluez-utils-extra-5.83-r1.apk" "$PWD/libical-3.0.20-r1.apk" "$PWD/kmod-bluetooth-6.12.112-r1.apk" \
+            "$BLUEZ_DIST/bluez-daemon-5.87-r1.apk" "$BLUEZ_DIST/bluez-libs-5.87-r1.apk" "$BLUEZ_DIST/bluez-utils-5.87-r1.apk" \
+            "$BLUEZ_DIST/bluez-utils-extra-5.87-r1.apk" "$PWD/libical-3.0.20-r1.apk" "$PWD/kmod-bluetooth-6.12.112-r1.apk" \
             "$PWD/kmod-crypto-ecdh-6.12.112-r1.apk" "$PWD/kmod-crypto-kpp-6.12.112-r1.apk"
 
           BTDBIN=$(find rootfs-stage -type f -name 'bluetoothd' | head -1)
           test -n "$BTDBIN" || { echo "❌ bluetoothd 未安装"; find rootfs-stage -name 'bluetooth*' | head; exit 1; }
           echo "✅ bluetoothd 位于: $BTDBIN"
+          # bluez 5.87 自校验: 数据库文本位置随 apk 版本变化, 直接验证 btmgmt 二进制存在即可
+          test -x rootfs-stage/usr/bin/btmgmt || { echo '❌ btmgmt 未安装'; exit 1; }
+          echo "✅ bluez 5.87 已装进 rootfs (btmgmt 就位)"
+
+          # ---------- 3b. passwall2 (SF 官方源在线安装) ----------
+          # transparent proxy 所需 nft_tproxy/nft_socket 等模块 flippy 6.12.115 内核树已自带, 无需官方 kmod 包.
+          # 导入 passwall 官方签名公钥 (官方 25.12 key rootfs 已自带), 在线安装全程验签, 不用 --allow-untrusted.
+          curl -L --fail --retry 3 -o rootfs-stage/etc/apk/keys/passwall_apk.pub "$PW_KEY_URL"
+
+          # 临时收起 rootfs 内置源 (cernet 镜像 runner 海外访问不稳), 安装完恢复
+          RLIST=/etc/apk/repositories.d
+          mv rootfs-stage$RLIST/distfeeds.list  ./distfeeds.list.bak
+          mv rootfs-stage$RLIST/compat.list     ./compat.list.bak 2>/dev/null || true
+          mv rootfs-stage$RLIST/customfeeds.list ./customfeeds.list.bak 2>/dev/null || true
+
+          ibtools/bin/apk add \
+            --root "$PWD/rootfs-stage" --no-scripts \
+            --repository "$PW_LUCI_REPO" --repository "$PW_PKG_REPO" --repository "$PW2_REPO" \
+            --repository "$FEED_OFFICIAL" --repository "$KMODS_OFFICIAL" \
+            luci-app-passwall2 xray-core sing-box
+
+          # 恢复内置源 + 清理在线安装留下的索引缓存
+          mv ./distfeeds.list.bak  rootfs-stage$RLIST/distfeeds.list
+          mv ./compat.list.bak     rootfs-stage$RLIST/compat.list 2>/dev/null || true
+          mv ./customfeeds.list.bak rootfs-stage$RLIST/customfeeds.list 2>/dev/null || true
+          rm -rf rootfs-stage/var/cache/apk rootfs-stage/etc/apk/cache rootfs-stage/tmp/apk* 2>/dev/null || true
+
+          # --no-scripts 跳过了 luci-app-passwall2 的 post-install (aarch64 脚本无法在 x86 runner 执行),
+          # 其 uci 默认配置由本仓库 dist/passwall2-default-config/passwall2 补齐 (enabled=0, 开机不启动)
+          echo "8e3cad5900452278b5a2e773664662faef39a6763f8423f1864584e4d86a87ee  $GITHUB_WORKSPACE/dist/passwall2-default-config/passwall2" | sha256sum -c -
+          cp "$GITHUB_WORKSPACE/dist/passwall2-default-config/passwall2" rootfs-stage/etc/config/passwall2
+
+          PW_BIN=$(find rootfs-stage -type f -name 'xray' | head -1)
+          SB_BIN=$(find rootfs-stage -type f -name 'sing-box' | head -1)
+          test -n "$PW_BIN" && test -n "$SB_BIN" || { echo '❌ passwall2/xray/sing-box 未安装'; exit 1; }
+          echo "✅ passwall2 就位: xray=$PW_BIN sing-box=$SB_BIN"
 
           # ---------- 4. Repack rootfs (root:root) ----------
           tar --owner=0 --group=0 -czf rootfs.tar.gz -C rootfs-stage .
           rm -rf rootfs-stage ibtools *.apk imagebuilder.tar.zst
           echo "=== 注入结果抽查 ==="
-          tar -tzf rootfs.tar.gz | grep -E 'brcmfmac43455|BCM4345C0|modules.d/(brcmfmac|32-hci-bt)|bluetoothd|btattach|libbluetooth' | head -30
+          tar -tzf rootfs.tar.gz | grep -E 'brcmfmac43455|BCM4345C0|cypress/cyfmac43455|modules.d/(brcmfmac|32-hci-bt)|bluetoothd|btattach|libbluetooth|passwall2|xray|sing-box|geoview|v2ray-geo' | head -40
           ls -lh rootfs.tar.gz
 
       - name: Package N1 firmware (s905d + flippy 6.12.115)
@@ -140,8 +205,10 @@ jobs:
           body: |
             iStoreOS 25.12.6 (apk) + flippy 6.12.115 内核 + N1 蓝牙/WiFi 支持
             - 已注入: brcmfmac43455-sdio 固件 (bin/txt/clm_blob), BCM4345C0.hcd
-            - 已预装: bluez-daemon / bluez-libs / bluez-utils (官方 25.12.6 feed, apk --root 安装)
+            - 已注入: cypress/cyfmac43455-sdio 7.45.234 (linux-firmware f97e3167, sha256 校验; DashPlay board_phicomm_n1.py 开机自动切换 N1 专属名到双链路稳定固件)
+            - 已预装: bluez-daemon/libs/utils 5.87 (仓库 dist/bluez-5.87, 修复 5.83 btmgmt 非交互 mgmt socket 不建立的回归)
             - 已预置: /etc/modules.d/32-hci-bt (hci_uart + btbcm 开机自动加载)
+            - 已预装: passwall2 26.11.3 + xray-core + sing-box (SF 官方源, 默认不自启, LuCI 服务菜单进入配置; nft_tproxy/nft_socket 内核树已自带)
             - 机型: s905d (Phicomm N1)
           files: |
             ${{ env.PACKAGED_OUTPUTPATH }}/*.img.gz
