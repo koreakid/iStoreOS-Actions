@@ -1,10 +1,10 @@
-name: N1_Custom_BT (iStoreOS 25.12.6 + flippy 6.12.114 + BT/WiFi)
+name: N1_Custom_BT (iStoreOS 25.12.6 + flippy 6.12.115 + BT/WiFi)
 on:
   workflow_dispatch:
 
 env:
   VERSION: 25.12.6
-  KERNEL: 6.12.114
+  KERNEL: 6.12.115
   ROOTFS_URL: https://github.com/koreakid/iStoreOS-Actions/releases/download/iStoreOS-25.12.6-RELEASE-dhcp/istoreos-armsr-armv8-generic-rootfs.tar.gz
   IMAGEBUILDER_URL: https://github.com/Kwonelee/iStoreOS-Actions/releases/download/iStoreOS-ImageBuilder/20261106-istoreos-imagebuilder-armsr-armv8.Linux-x86_64.tar.zst
 
@@ -107,12 +107,12 @@ jobs:
           tar -tzf rootfs.tar.gz | grep -E 'brcmfmac43455|BCM4345C0|modules.d/brcmfmac|bluetoothd|btattach|libbluetooth' | head -30
           ls -lh rootfs.tar.gz
 
-      - name: Package N1 firmware (s905d + flippy 6.12.114)
+      - name: Package N1 firmware (s905d + flippy 6.12.115)
         uses: ophub/amlogic-s9xxx-openwrt@main
         with:
           openwrt_path: bin/targets/armsr/armv8/rootfs.tar.gz
           openwrt_board: s905d
-          openwrt_kernel: 6.12.114
+          openwrt_kernel: 6.12.115
           auto_kernel: false
           kernel_repo: ophub/kernel
           kernel_usage: flippy
@@ -135,7 +135,7 @@ jobs:
         with:
           tag_name: iStoreOS-${{ env.VERSION }}-N1-flippy-${{ env.KERNEL }}
           body: |
-            iStoreOS 25.12.6 (apk) + flippy 6.12.114 内核 + N1 蓝牙/WiFi 支持
+            iStoreOS 25.12.6 (apk) + flippy 6.12.115 内核 + N1 蓝牙/WiFi 支持
             - 已注入: brcmfmac43455-sdio 固件 (bin/txt/clm_blob), BCM4345C0.hcd
             - 已预装: bluez-daemon / bluez-libs / bluez-utils (官方 25.12.6 feed, apk --root 安装)
             - 机型: s905d (Phicomm N1)
