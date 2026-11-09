@@ -157,7 +157,7 @@ jobs:
           echo "20d98f4a1f7f04fcb779cd7d4e2ad90c804a3c2a89b13ef3a04c6913e31253fe  v2ray-geoip-202610050438-r1.apk"   | sha256sum -c -
           echo "41ab2dbce2b7d4171780ced9a2c532465d6564847e91297fa45fb1818e03f2a7  v2ray-geosite-20261009101206-r1.apk" | sha256sum -c -
           echo "b04316e6f254a3fcb5d6e0bd35e8cd51fd7171f35448f9fe4151b1c17decf731  xray-core-26.10.21-r1.apk"          | sha256sum -c -
-          echo "be88435d7ed35e26737e6ceea7d17398ded3807c40de1ab1c004d1678a20777b8  sing-box-1.13.21-r1.apk"            | sha256sum -c -
+          echo "be88435d7ed35e26373e6ceea7d17398de3807c40de1ab1c004d1678a20777b8  sing-box-1.13.21-r1.apk" | sha256sum -c -
 
           ibtools/bin/apk add \
             --root "$PWD/rootfs-stage" --allow-untrusted --no-scripts --no-network \
