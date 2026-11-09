@@ -56,6 +56,9 @@ jobs:
             chmod +x rootfs-stage/etc/uci-defaults/99_n1_bluetoothd.sh
           fi
 
+          # 蓝牙模块自加载条目（N1 板载 BCM43455: DT serdev 蓝牙节点需 modprobe hci_uart 后 hci0 才出现）
+          printf 'btbcm\nhci_uart\n' > rootfs-stage/etc/modules.d/32-hci-bt
+
           # ---------- 3. bluez userspace from official 25.12.6 feed ----------
           FEED_OFFICIAL=https://downloads.openwrt.org/releases/25.12.6/packages/aarch64_generic/packages
           FEED_MIRROR=https://mirror.nju.edu.cn/openwrt/releases/25.12.6/packages/aarch64_generic/packages
@@ -104,7 +107,7 @@ jobs:
           tar --owner=0 --group=0 -czf rootfs.tar.gz -C rootfs-stage .
           rm -rf rootfs-stage ibtools *.apk imagebuilder.tar.zst
           echo "=== 注入结果抽查 ==="
-          tar -tzf rootfs.tar.gz | grep -E 'brcmfmac43455|BCM4345C0|modules.d/brcmfmac|bluetoothd|btattach|libbluetooth' | head -30
+          tar -tzf rootfs.tar.gz | grep -E 'brcmfmac43455|BCM4345C0|modules.d/(brcmfmac|32-hci-bt)|bluetoothd|btattach|libbluetooth' | head -30
           ls -lh rootfs.tar.gz
 
       - name: Package N1 firmware (s905d + flippy 6.12.115)
@@ -138,6 +141,7 @@ jobs:
             iStoreOS 25.12.6 (apk) + flippy 6.12.115 内核 + N1 蓝牙/WiFi 支持
             - 已注入: brcmfmac43455-sdio 固件 (bin/txt/clm_blob), BCM4345C0.hcd
             - 已预装: bluez-daemon / bluez-libs / bluez-utils (官方 25.12.6 feed, apk --root 安装)
+            - 已预置: /etc/modules.d/32-hci-bt (hci_uart + btbcm 开机自动加载)
             - 机型: s905d (Phicomm N1)
           files: |
             ${{ env.PACKAGED_OUTPUTPATH }}/*.img.gz
