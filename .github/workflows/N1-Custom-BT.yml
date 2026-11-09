@@ -1,4 +1,4 @@
-name: N1_Custom_BT (iStoreOS 25.12.6 + flippy 6.12.115 + BT/WiFi/passwall2)
+name: N1_Custom_BT (iStoreOS 25.12.6 + flippy 6.12.115 + BT/WiFi)
 on:
   workflow_dispatch:
 
@@ -13,8 +13,7 @@ env:
   CYPRESS_CLM_URL: https://gitlab.com/kernel-firmware/linux-firmware/-/raw/f97e31677523/cypress/cyfmac43455-sdio.clm_blob
   CYPRESS_BIN_SHA256: d408faa9d0d5b1a2f9912dcea53ab0be48217288e398406d117f0edafe7c3edd
   CYPRESS_CLM_SHA256: 15f50a27020b263d1bea215c8f68d0550d912932d1d9ef19ffd59f18d82dd460
-  # passwall2: SF 狡有 3 包已入仓 dist/passwall2/, 其余 9 包从官方 25.12.6 feed 固定 URL 下载
-  # (SF 源 master.dl 返回 302, apk 内置 wget 不跟随重定向, 在线安装不可行, 改本地文件安装)
+  # passwall2 已按需求移除 (v4 镜像曾内置, v5 起不再预装)
 
 jobs:
   build:
@@ -32,7 +31,7 @@ jobs:
           curl -L --fail --retry 3 -o bin/targets/armsr/armv8/rootfs.tar.gz "$ROOTFS_URL"
           ls -lh bin/targets/armsr/armv8/
 
-      - name: Inject N1 WiFi/BT firmware + cypress + bluez 5.87 + passwall2
+      - name: Inject N1 WiFi/BT firmware + cypress + bluez 5.87
         run: |
           set -e
           cd bin/targets/armsr/armv8
@@ -52,10 +51,8 @@ jobs:
           cp rootfs-stage/lib/firmware/brcm/BCM4345C0.hcd rootfs-stage/lib/firmware/BCM4345C0.hcd
 
           # ---------- 2b. Cypress 7.45.234 固件 (N1 双链路实测稳定版) ----------
-          # N1 板卡专属名 brcm/brcmfmac43455-sdio.phicomm,n1.* 仍走 2018 旧固件时,
+          # N1 板卡专属名 brcm/brcmfmac43455-sdio.phicomm,n1.* 走 2018 旧固件 (7.45.154) 时,
           # "连上游热点 + 自己发 AP" 双角色场景 1~1.5 分钟静默失联; 切到 cypress 7.45.234 后稳定.
-          # DashPlay 的 board_phicomm_n1.py 每次 supervisor 启动时校验此版本串并自动建立 brcm/ 下的
-          # phicomm,n1 -> ../cypress/ 符号链接, 故这里只需放好文件, 无需在镜像里预切换.
           mkdir -p rootfs-stage/lib/firmware/cypress
           curl -L --fail --retry 3 -o rootfs-stage/lib/firmware/cypress/cyfmac43455-sdio.bin      "$CYPRESS_BIN_URL"
           curl -L --fail --retry 3 -o rootfs-stage/lib/firmware/cypress/cyfmac43455-sdio.clm_blob "$CYPRESS_CLM_URL"
@@ -64,18 +61,29 @@ jobs:
           grep -aq '7.45.234' rootfs-stage/lib/firmware/cypress/cyfmac43455-sdio.bin \
             || { echo '❌ Cypress 固件版本串不是 7.45.234, board_phicomm_n1.py 将拒绝切换'; exit 1; }
 
+          # ---------- 2c. 预切换 N1 板卡专属固件名 (修复: 旧方案需二次启动才用上 Cypress) ----------
+          # rootfs 自带 brcmfmac43455-sdio.phicomm,n1.bin (2018 旧固件), N1 的 DT compatible 使它优先加载;
+          # DashPlay board_phicomm_n1.py 只在 supervisor 启动时才改 symlink 并重载驱动, 首次开机仍先进旧固件.
+          # 这里在镜像里直接完成切换: 原厂旧件保留为 .vendor 备份, 专属名指向 cypress (首次开机即生效);
+          # board_phicomm_n1.py 检测到 symlink 已指对时为 no-op, 完全兼容.
+          BRCM=rootfs-stage/lib/firmware/brcm
+          if [ -f "$BRCM/brcmfmac43455-sdio.phicomm,n1.bin" ] && [ ! -L "$BRCM/brcmfmac43455-sdio.phicomm,n1.bin" ]; then
+            mv "$BRCM/brcmfmac43455-sdio.phicomm,n1.bin" "$BRCM/brcmfmac43455-sdio.phicomm,n1.bin.vendor"
+          fi
+          ln -sfn ../cypress/cyfmac43455-sdio.bin      "$BRCM/brcmfmac43455-sdio.phicomm,n1.bin"
+          ln -sfn ../cypress/cyfmac43455-sdio.clm_blob "$BRCM/brcmfmac43455-sdio.phicomm,n1.clm_blob"
+
           # WiFi 模块自加载条目（若 rootfs 已有则跳过）
           if [ ! -e rootfs-stage/etc/modules.d/brcmfmac ]; then
             mkdir -p rootfs-stage/etc/modules.d
             printf 'brcmfmac\n' > rootfs-stage/etc/modules.d/brcmfmac
           fi
 
-          # 首次开机自动启用 bluetoothd
-          if [ -e rootfs-stage/etc/init.d/bluetoothd ] || true; then
-            mkdir -p rootfs-stage/etc/uci-defaults
-            printf '#!/bin/sh\n/etc/init.d/bluetoothd enable\n' > rootfs-stage/etc/uci-defaults/99_n1_bluetoothd.sh
-            chmod +x rootfs-stage/etc/uci-defaults/99_n1_bluetoothd.sh
-          fi
+          # bluetoothd 开机自启 (修复: 原 uci-defaults 方案在首次开机末尾才 enable, 启动序列已过 S62,
+          # bluetoothd 要等第二次重启才运行, 导致首次开机 DashPlay 蓝牙上电失败 "wired CarPlay only";
+          # 直接预创建 rc.d 启动链: dbus(S60) -> bluetoothd(S62) -> dashplay(S99), 首次开机即按序启动)
+          mkdir -p rootfs-stage/etc/rc.d
+          ln -sfn ../init.d/bluetoothd rootfs-stage/etc/rc.d/S62bluetoothd
 
           # 蓝牙模块自加载条目（N1 板载 BCM43455: DT serdev 蓝牙节点需 modprobe hci_uart 后 hci0 才出现）
           printf 'btbcm\nhci_uart\n' > rootfs-stage/etc/modules.d/32-hci-bt
@@ -132,55 +140,18 @@ jobs:
           test -x rootfs-stage/usr/bin/btmgmt || { echo '❌ btmgmt 未安装'; exit 1; }
           echo "✅ bluez 5.87 已装进 rootfs (btmgmt 就位)"
 
-          # ---------- 3b. passwall2 (本地 .apk 离线安装, 12 包闭包已在设备模拟验证 EXIT=0) ----------
-          # transparent proxy 所需 nft_tproxy/nft_socket 等模块 flippy 6.12.115 内核树已自带, 无需官方 kmod 包.
-          # SF 独有 3 包来自仓库 dist/passwall2/ (luci-app-passwall2 / geoview / tcping);
-          # 其余 9 包来自官方 25.12.6 feed 固定版本 (v2ray-geoip/xray/sing-box 用官方 feed 版本, 满足依赖).
-          PW_DIST="$GITHUB_WORKSPACE/dist/passwall2"
-          echo "cb4d6b2909da003b760c364dd9a1d509a4a01efc008c3e5f782598ad67019c34  $PW_DIST/luci-app-passwall2-26.11.3-r1.apk" | sha256sum -c -
-          echo "025d00abd16dc08c9d4cfbbcf472b896da27b31528b36db3eba77459be3c9fe1  $PW_DIST/geoview-0.2.9-r1.apk"          | sha256sum -c -
-          echo "0e81c20209170eab04b4bd54a0cb1a8a7aa8f836f99d20c14bee6b66a2916932  $PW_DIST/tcping-0.3-r1.apk"           | sha256sum -c -
-          fetch_apk coreutils-base64-9.9-r2         "$FEED_OFFICIAL" "$FEED_MIRROR"
-          fetch_apk coreutils-nohup-9.9-r2           "$FEED_OFFICIAL" "$FEED_MIRROR"
-          fetch_apk coreutils-timeout-9.9-r2         "$FEED_OFFICIAL" "$FEED_MIRROR"
-          fetch_apk libyaml-0.2.5-r2                 "$FEED_OFFICIAL" "$FEED_MIRROR"
-          fetch_apk lyaml-6.2.7-r2                   "$FEED_OFFICIAL" "$FEED_MIRROR"
-          fetch_apk v2ray-geoip-202610050438-r1      "$FEED_OFFICIAL" "$FEED_MIRROR"
-          fetch_apk v2ray-geosite-20261009101206-r1  "$FEED_OFFICIAL" "$FEED_MIRROR"
-          fetch_apk xray-core-26.10.21-r1            "$FEED_OFFICIAL" "$FEED_MIRROR"
-          fetch_apk sing-box-1.13.21-r1              "$FEED_OFFICIAL" "$FEED_MIRROR"
-          echo "f9bb0f401e477f8044429e2368917fcd6d425e3f51de76c22c830ea26c52a87b  coreutils-base64-9.9-r2.apk"        | sha256sum -c -
-          echo "fdf1552bfbcfc0d6d1ad609b0de950f94e04af21a37c314ffd38ed7726117e12  coreutils-nohup-9.9-r2.apk"        | sha256sum -c -
-          echo "f540d53b8f0668d356d40725e62728b4f5a55f65453abcff338aaa9613985595  coreutils-timeout-9.9-r2.apk"        | sha256sum -c -
-          echo "495d517fe854187dc283598ebe87499a4a74d49fc43380951dfcfc92323cb822  libyaml-0.2.5-r2.apk"               | sha256sum -c -
-          echo "2178c6ca688a49c64816b7a1b4d11eb58719ac49ebf071e1a3c49a59b0b34070  lyaml-6.2.7-r2.apk"                 | sha256sum -c -
-          echo "20d98f4a1f7f04fcb779cd7d4e2ad90c804a3c2a89b13ef3a04c6913e31253fe  v2ray-geoip-202610050438-r1.apk"   | sha256sum -c -
-          echo "41ab2dbce2b7d4171780ced9a2c532465d6564847e91297fa45fb1818e03f2a7  v2ray-geosite-20261009101206-r1.apk" | sha256sum -c -
-          echo "b04316e6f254a3fcb5d6e0bd35e8cd51fd7171f35448f9fe4151b1c17decf731  xray-core-26.10.21-r1.apk"          | sha256sum -c -
-          echo "be88435d7ed35e26373e6ceea7d17398de3807c40de1ab1c004d1678a20777b8  sing-box-1.13.21-r1.apk" | sha256sum -c -
-
-          ibtools/bin/apk add \
-            --root "$PWD/rootfs-stage" --allow-untrusted --no-scripts --no-network \
-            "$PW_DIST/luci-app-passwall2-26.11.3-r1.apk" "$PW_DIST/geoview-0.2.9-r1.apk" "$PW_DIST/tcping-0.3-r1.apk" \
-            "$PWD/coreutils-base64-9.9-r2.apk" "$PWD/coreutils-nohup-9.9-r2.apk" "$PWD/coreutils-timeout-9.9-r2.apk" \
-            "$PWD/libyaml-0.2.5-r2.apk" "$PWD/lyaml-6.2.7-r2.apk" "$PWD/v2ray-geoip-202610050438-r1.apk" \
-            "$PWD/v2ray-geosite-20261009101206-r1.apk" "$PWD/xray-core-26.10.21-r1.apk" "$PWD/sing-box-1.13.21-r1.apk"
-
-          # --no-scripts 跳过了 luci-app-passwall2 的 post-install (aarch64 脚本无法在 x86 runner 执行),
-          # 其 uci 默认配置由本仓库 dist/passwall2-default-config/passwall2 补齐 (enabled=0, 开机不启动)
-          echo "8e3cad5900452278b5a2e773664662faef39a6763f8423f1864584e4d86a87ee  $GITHUB_WORKSPACE/dist/passwall2-default-config/passwall2" | sha256sum -c -
-          cp "$GITHUB_WORKSPACE/dist/passwall2-default-config/passwall2" rootfs-stage/etc/config/passwall2
-
-          PW_BIN=$(find rootfs-stage -type f -name 'xray' | head -1)
-          SB_BIN=$(find rootfs-stage -type f -name 'sing-box' | head -1)
-          test -n "$PW_BIN" && test -n "$SB_BIN" || { echo '❌ passwall2/xray/sing-box 未安装'; exit 1; }
-          echo "✅ passwall2 就位: xray=$PW_BIN sing-box=$SB_BIN"
+          # 校验 bluetoothd init 脚本与 rc.d 启动链存在
+          test -f rootfs-stage/etc/init.d/bluetoothd && test -L rootfs-stage/etc/rc.d/S62bluetoothd \
+            || { echo '❌ bluetoothd init/rc.d 启动链缺失'; exit 1; }
+          echo "✅ S62bluetoothd 启动链就位 (首次开机 bluetoothd 即自启)"
 
           # ---------- 4. Repack rootfs (root:root) ----------
           tar --owner=0 --group=0 -czf rootfs.tar.gz -C rootfs-stage .
           rm -rf rootfs-stage ibtools *.apk imagebuilder.tar.zst
-          echo "=== 注入结果抽查 ==="
-          tar -tzf rootfs.tar.gz | grep -E 'brcmfmac43455|BCM4345C0|cypress/cyfmac43455|modules.d/(brcmfmac|32-hci-bt)|bluetoothd|btattach|libbluetooth|passwall2|xray|sing-box|geoview|v2ray-geo' | head -50
+          echo "=== 注入结果抽查 (固件/模块/蓝牙) ==="
+          tar -tvzf rootfs.tar.gz | grep -E 'brcmfmac43455|BCM4345C0|cypress/cyfmac43455|modules.d/(brcmfmac|32-hci-bt)|bluetoothd|btattach|libbluetooth' | head -30
+          echo "=== 关键符号链接与启动链 (phicomm,n1 -> cypress, S62bluetoothd) ==="
+          tar -tvzf rootfs.tar.gz | grep -E 'phicomm,n1\.(bin|clm_blob)(\.vendor)?$|rc.d/S62bluetoothd'
           ls -lh rootfs.tar.gz
 
       - name: Package N1 firmware (s905d + flippy 6.12.115)
@@ -213,10 +184,13 @@ jobs:
           body: |
             iStoreOS 25.12.6 (apk) + flippy 6.12.115 内核 + N1 蓝牙/WiFi 支持
             - 已注入: brcmfmac43455-sdio 固件 (bin/txt/clm_blob), BCM4345C0.hcd
-            - 已注入: cypress/cyfmac43455-sdio 7.45.234 (linux-firmware f97e3167, sha256 校验; DashPlay board_phicomm_n1.py 开机自动切换 N1 专属名到双链路稳定固件)
-            - 已预装: bluez-daemon/libs/utils 5.87 (仓库 dist/bluez-5.87, 修复 5.83 btmgmt 非交互 mgmt socket 不建立的回归)
+            - 已注入并预切换: cypress/cyfmac43455-sdio 7.45.234 (linux-firmware f97e3167, sha256+版本串双校验;
+              phicomm,n1 板卡专属名在镜像内即指向 Cypress 双链路稳定固件, 首次开机直接生效;
+              原厂旧固件保留为 .phicomm,n1.bin.vendor; DashPlay board_phicomm_n1.py 对此为 no-op, 完全兼容)
+            - 已预装: bluez-daemon/libs/utils 5.87 (仓库 dist/bluez-5.87, 修复 5.83 btmgmt 非交互 mgmt socket 回归)
             - 已预置: /etc/modules.d/32-hci-bt (hci_uart + btbcm 开机自动加载)
-            - 已预装: passwall2 26.11.3 + xray-core + sing-box (SF 官方源, 默认不自启, LuCI 服务菜单进入配置; nft_tproxy/nft_socket 内核树已自带)
+            - 已预置: /etc/rc.d/S62bluetoothd 启动链 (dbus S60 -> bluetoothd S62 -> dashplay S99;
+              修复原 uci-defaults 方案首次开机时序已过、bluetoothd 要等第二次重启才启动的问题)
             - 机型: s905d (Phicomm N1)
           files: |
             ${{ env.PACKAGED_OUTPUTPATH }}/*.img.gz
