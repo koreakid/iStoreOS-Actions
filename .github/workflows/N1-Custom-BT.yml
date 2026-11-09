@@ -152,11 +152,11 @@ jobs:
           echo "f9bb0f401e477f8044429e2368917fcd6d425e3f51de76c22c830ea26c52a87b  coreutils-base64-9.9-r2.apk"        | sha256sum -c -
           echo "fdf1552bfbcfc0d6d1ad609b0de950f94e04af21a37c314ffd38ed7726117e12  coreutils-nohup-9.9-r2.apk"        | sha256sum -c -
           echo "f540d53b8f0668d356d40725e62728b4f5a55f65453abcff338aaa9613985595  coreutils-timeout-9.9-r2.apk"        | sha256sum -c -
-          echo "495d517fe854187dc283598ebe87499a4a74d49fc43380951dfcfa92323cb822  libyaml-0.2.5-r2.apk"               | sha256sum -c -
+          echo "495d517fe854187dc283598ebe87499a4a74d49fc43380951dfcfc92323cb822  libyaml-0.2.5-r2.apk"               | sha256sum -c -
           echo "2178c6ca688a49c64816b7a1b4d11eb58719ac49ebf071e1a3c49a59b0b34070  lyaml-6.2.7-r2.apk"                 | sha256sum -c -
           echo "20d98f4a1f7f04fcb779cd7d4e2ad90c804a3c2a89b13ef3a04c6913e31253fe  v2ray-geoip-202610050438-r1.apk"   | sha256sum -c -
           echo "41ab2dbce2b7d4171780ced9a2c532465d6564847e91297fa45fb1818e03f2a7  v2ray-geosite-20261009101206-r1.apk" | sha256sum -c -
-          echo "b04316e6f254a3fcb5d6e0bd35e8ed41fd7171f35448f9fe4151b1c17decf731  xray-core-26.10.21-r1.apk"          | sha256sum -c -
+          echo "b04316e6f254a3fcb5d6e0bd35e8cd51fd7171f35448f9fe4151b1c17decf731  xray-core-26.10.21-r1.apk"          | sha256sum -c -
           echo "be88435d7ed35e26737e6ceea7d17398ded3807c40de1ab1c004d1678a20777b8  sing-box-1.13.21-r1.apk"            | sha256sum -c -
 
           ibtools/bin/apk add \
